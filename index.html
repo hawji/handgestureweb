@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Gesture Interaction with Working PNG Save Feature</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/handpose"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        #video-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            perspective: 1000px;
+        }
+        #webcam, #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .emoji {
+            position: absolute;
+            font-size: 50px;
+            display: inline-block;
+            animation: rotate3D 3s linear infinite;
+        }
+        @keyframes rotate3D {
+            0% { transform: rotate3d(1, 1, 1, 0deg); }
+            100% { transform: rotate3d(1, 1, 1, 360deg); }
+        }
+        #save-button {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 1000;
+        }
+        #save-button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div id="video-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="overlay"></canvas>
+    </div>
+    <button id="save-button">Save PNG</button>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const overlay = document.getElementById('overlay');
+        const videoContainer = document.getElementById('video-container');
+        const ctx = overlay.getContext('2d');
+        const saveButton = document.getElementById('save-button');
+        let lastGesture = null;
+        let emojis = [];
+        let gestureTimeout = null;
+        let lastEmojiCreationTime = 0;
+
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: { ideal: 1280 }, height: { ideal: 720 } } 
+            });
+            video.srcObject = stream;
+            return new Promise(resolve => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    resolve(video);
+                }
+            });
+        }
+
+        async function loadHandposeModel() {
+            return handpose.load();
+        }
+
+        function isVGesture(landmarks) {
+            const indexTip = landmarks[8];
+            const middleTip = landmarks[12];
+            const ringTip = landmarks[16];
+            const pinkyTip = landmarks[20];
+            const palmBase = landmarks[0];
+
+            const isIndexUp = indexTip[1] < palmBase[1];
+            const isMiddleUp = middleTip[1] < palmBase[1];
+            
+            const indexMiddleDistance = Math.sqrt(
+                Math.pow(indexTip[0] - middleTip[0], 2) +
+                Math.pow(indexTip[1] - middleTip[1], 2)
+            );
+            const areFingersSeparated = indexMiddleDistance > 20;
+
+            const isRingLower = ringTip[1] > indexTip[1] && ringTip[1] > middleTip[1];
+            const isPinkyLower = pinkyTip[1] > indexTip[1] && pinkyTip[1] > middleTip[1];
+
+            return isIndexUp && isMiddleUp && areFingersSeparated && (isRingLower || isPinkyLower);
+        }
+
+        function isHighFiveGesture(landmarks) {
+            const fingerTips = [8, 12, 16, 20];
+            const palmBase = landmarks[0];
+            
+            return fingerTips.every(tip => landmarks[tip][1] < palmBase[1] - 20);
+        }
+
+        function isFistGesture(landmarks) {
+            const fingerTips = [8, 12, 16, 20];
+            const palmBase = landmarks[0];
+            
+            return fingerTips.every(tip => landmarks[tip][1] > palmBase[1] - 20);
+        }
+
+        function createEmoji(type) {
+            const emoji = document.createElement('div');
+            emoji.classList.add('emoji');
+            emoji.textContent = type === 'v' ? '✌️' : type === 'highfive' ? '🖐️' : '👊';
+            emoji.style.left = `${Math.random() * 100}%`;
+            emoji.style.top = `${Math.random() * 100}%`;
+            emoji.style.fontSize = `${Math.random() * 50 + 30}px`;
+            
+            videoContainer.appendChild(emoji);
+            emojis.push(emoji);
+
+            setTimeout(() => {
+                emoji.remove();
+                emojis = emojis.filter(e => e !== emoji);
+            }, 3000);
+        }
+
+        function removeAllEmojis() {
+            emojis.forEach(emoji => emoji.remove());
+            emojis = [];
+        }
+
+        function drawFrame() {
+            ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
+            emojis.forEach(emoji => {
+                ctx.font = emoji.style.fontSize + ' Arial';
+                ctx.fillText(emoji.textContent, 
+                    parseFloat(emoji.style.left) * overlay.width / 100, 
+                    parseFloat(emoji.style.top) * overlay.height / 100);
+            });
+        }
+
+        async function main() {
+            await setupCamera();
+            const model = await loadHandposeModel();
+
+            overlay.width = video.videoWidth;
+            overlay.height = video.videoHeight;
+
+            async function predict() {
+                const predictions = await model.estimateHands(video);
+
+                let currentGesture = null;
+
+                if (predictions.length > 0) {
+                    const landmarks = predictions[0].landmarks;
+                    if (isVGesture(landmarks)) {
+                        currentGesture = 'v';
+                    } else if (isHighFiveGesture(landmarks)) {
+                        currentGesture = 'highfive';
+                    } else if (isFistGesture(landmarks)) {
+                        currentGesture = 'fist';
+                    }
+
+                    if (currentGesture) {
+                        const currentTime = Date.now();
+                        if (currentTime - lastEmojiCreationTime > 400) {
+                            for (let i = 0; i < 3; i++) {
+                                createEmoji(currentGesture);
+                            }
+                            lastEmojiCreationTime = currentTime;
+                        }
+                        lastGesture = currentGesture;
+
+                        if (gestureTimeout) {
+                            clearTimeout(gestureTimeout);
+                            gestureTimeout = null;
+                        }
+                    }
+                } else {
+                    if (lastGesture && !gestureTimeout) {
+                        gestureTimeout = setTimeout(() => {
+                            removeAllEmojis();
+                            lastGesture = null;
+                            gestureTimeout = null;
+                        }, 2000);
+                    }
+                }
+
+                drawFrame();
+                requestAnimationFrame(predict);
+            }
+
+            predict();
+        }
+
+        function resizeCanvas() {
+            overlay.width = video.videoWidth;
+            overlay.height = video.videoHeight;
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        document.addEventListener('DOMContentLoaded', main);
+
+        saveButton.addEventListener('click', function() {
+            const link = document.createElement('a');
+            link.download = 'hand_gesture_interaction.png';
+            link.href = overlay.toDataURL('image/png');
+            link.click();
+        });
+    </script>
+</body>
+</html>
